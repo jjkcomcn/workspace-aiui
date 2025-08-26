@@ -20,7 +20,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 全局设备配置
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE = torch.device("cpu" if DEFAULT_CONFIG['FORCE_CPU'] else 
+                     "cuda" if torch.cuda.is_available() else "cpu")
+logger.info(f"Using device: {DEVICE}")
 
 def get_style_model_and_loss(
     cnn: nn.Module,
@@ -67,10 +69,13 @@ def get_style_model_and_loss(
         
     # 确保模型在正确设备上
     cnn = cnn.to(DEVICE)
-    # 冻结模型参数并启用no_grad
-    with torch.no_grad():
-        for param in cnn.parameters():
-            param.requires_grad_(False)
+    # 冻结模型参数但保留梯度计算
+    for param in cnn.parameters():
+        param.requires_grad_(False)
+    
+    # 确保输入图像保留梯度
+    content_img = content_img.requires_grad_(True)
+    style_img = style_img.requires_grad_(True)
     content_losses: List[ContentLoss] = []
     style_losses: List[StyleLoss] = []
     model = nn.Sequential().to(DEVICE)
@@ -82,35 +87,51 @@ def get_style_model_and_loss(
     if invalid_layers:
         raise ValueError(f"Invalid layer names: {invalid_layers}. Valid layers are: {all_layers}")
 
-    # 获取features子模块
-    features = cnn.features
+    # 直接使用Sequential模型的层
     conv_counter = 1
     
-    for layer in features.children():
+    # 添加输入验证层
+    model.add_module('input_check', nn.Identity())
+    
+    for layer in cnn.children():
         if isinstance(layer, nn.Conv2d):
             layer_name = f'conv_{conv_counter}'
             model.add_module(layer_name, layer)
             
             # 添加内容损失层
             if layer_name in content_layers:
-                target = model(content_img.detach())
-                # 检查特征值范围
-                if torch.isnan(target).any() or torch.isinf(target).any():
-                    raise ValueError(f"NaN/Inf detected in content features at layer {layer_name}")
-                content_loss = ContentLoss(target, content_weight)
-                model.add_module(f'content_loss_{conv_counter}', content_loss)
-                content_losses.append(content_loss)
+                with torch.no_grad():
+                    target = model(content_img.detach())
+                    # 数值稳定性处理
+                    if torch.isnan(target).any() or torch.isinf(target).any():
+                        target = torch.nan_to_num(
+                            target,
+                            nan=DEFAULT_CONFIG['EPSILON'],
+                            posinf=DEFAULT_CONFIG['MAX_FEATURE_VALUE'],
+                            neginf=DEFAULT_CONFIG['MIN_FEATURE_VALUE']
+                        )
+                        logger.warning(f"NaN/Inf detected in content features at layer {layer_name}, replaced with finite values")
+                    content_loss = ContentLoss(target, content_weight)
+                    model.add_module(f'content_loss_{conv_counter}', content_loss)
+                    content_losses.append(content_loss)
             
             # 添加风格损失层
             if layer_name in style_layers:
-                target = model(style_img.detach())
-                # 检查特征值范围
-                if torch.isnan(target).any() or torch.isinf(target).any():
-                    raise ValueError(f"NaN/Inf detected in style features at layer {layer_name}")
-                target = gram(target)
-                style_loss = StyleLoss(target, style_weight)
-                model.add_module(f'style_loss_{conv_counter}', style_loss)
-                style_losses.append(style_loss)
+                with torch.no_grad():
+                    target = model(style_img.detach())
+                    # 数值稳定性处理
+                    if torch.isnan(target).any() or torch.isinf(target).any():
+                        target = torch.nan_to_num(
+                            target,
+                            nan=DEFAULT_CONFIG['EPSILON'],
+                            posinf=DEFAULT_CONFIG['MAX_FEATURE_VALUE'],
+                            neginf=DEFAULT_CONFIG['MIN_FEATURE_VALUE']
+                        )
+                        logger.warning(f"NaN/Inf detected in style features at layer {layer_name}, replaced with finite values")
+                    target = gram(target)
+                    style_loss = StyleLoss(target, style_weight)
+                    model.add_module(f'style_loss_{conv_counter}', style_loss)
+                    style_losses.append(style_loss)
                 
             conv_counter += 1
             

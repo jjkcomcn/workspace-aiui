@@ -31,15 +31,23 @@ def load_image(image_path: str, target_size: int = None) -> torch.Tensor:
     # 转换颜色空间
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     
-    # 预缩放降低处理压力
-    pre_scale = DEFAULT_CONFIG.get('PRE_SCALE_FACTOR', 0.5)
+    # 根据配置选择插值方法
+    interpolation = {
+        'nearest': cv2.INTER_NEAREST,
+        'bilinear': cv2.INTER_LINEAR,
+        'cubic': cv2.INTER_CUBIC,
+        'lanczos': cv2.INTER_LANCZOS4
+    }.get(DEFAULT_CONFIG.get('INTERPOLATION', 'bilinear'), cv2.INTER_LINEAR)
+    
+    # 预缩放处理
+    pre_scale = DEFAULT_CONFIG.get('PRE_SCALE_FACTOR', 0.8)
     if pre_scale < 1.0:
         h, w = img.shape[:2]
         pre_h = int(h * pre_scale)
         pre_w = int(w * pre_scale)
-        img = cv2.resize(img, (pre_w, pre_h), interpolation=cv2.INTER_LANCZOS4)
+        img = cv2.resize(img, (pre_w, pre_h), interpolation=interpolation)
     
-    # 最终调整到目标尺寸
+    # 调整到目标尺寸
     if target_size is not None:
         h, w = img.shape[:2]
         if h > w:
@@ -48,11 +56,12 @@ def load_image(image_path: str, target_size: int = None) -> torch.Tensor:
         else:
             new_w = target_size
             new_h = int(h * target_size / w)
-        img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+        img = cv2.resize(img, (new_w, new_h), interpolation=interpolation)
     
-    # 归一化并转换为张量
+    # 转换为张量(禁用归一化)
     img = img.astype(np.float32) / 255.0
-    img = (img - IMAGENET_MEAN) / IMAGENET_STD
+    if DEFAULT_CONFIG.get('IMAGE_MEAN', [0,0,0]) != [0,0,0]:
+        img = (img - DEFAULT_CONFIG['IMAGE_MEAN']) / DEFAULT_CONFIG['IMAGE_STD']
     img = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0)
     
     return img

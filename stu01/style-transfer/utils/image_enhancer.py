@@ -1,3 +1,4 @@
+from configs.settings import DEFAULT_CONFIG
 import torch
 from torchvision import transforms
 from PIL import Image
@@ -21,13 +22,24 @@ def load_image(filename: str, size: Optional[int] = None, scale: Optional[float]
     try:
         img = Image.open(filename).convert('RGB')
         if size is not None:
-            img = img.resize((size, size), Image.Resampling.LANCZOS)
+            # 保持宽高比调整大小
+            if DEFAULT_CONFIG.get('KEEP_ASPECT_RATIO', False):
+                w, h = img.size
+                ratio = min(size/w, size/h)
+                new_w = int(w * ratio)
+                new_h = int(h * ratio)
+                img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            else:
+                img = img.resize((size, size), Image.Resampling.LANCZOS)
         elif scale is not None:
             img = img.resize((int(img.size[0] / scale), int(img.size[1] / scale)), Image.Resampling.LANCZOS)
         
         transform = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            transforms.Normalize(
+                mean=DEFAULT_CONFIG['IMAGE_MEAN'],
+                std=DEFAULT_CONFIG['IMAGE_STD']
+            ),
         ])
         return transform(img).unsqueeze(0)
     except Exception as e:
@@ -48,7 +60,10 @@ def image_to_tensor(image: Image.Image, size: Optional[int] = None) -> torch.Ten
     
     transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        transforms.Normalize(
+            mean=DEFAULT_CONFIG['IMAGE_MEAN'],
+            std=DEFAULT_CONFIG['IMAGE_STD']
+        ),
     ])
     return transform(image).unsqueeze(0)
 
@@ -128,7 +143,8 @@ def tensor_to_image(tensor: torch.Tensor) -> Image.Image:
             raise ValueError(f"Expected 3 channels after conversion, got {img.shape[0]}")
             
         img = img.transpose(1, 2, 0)
-        img = img * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
+        # Correct denormalization: first subtract mean, then divide by std
+        img = (img - np.array(DEFAULT_CONFIG['IMAGE_MEAN'])) / np.array(DEFAULT_CONFIG['IMAGE_STD'])
         img = np.clip(img, 0, 1)
         return Image.fromarray((img * 255).astype(np.uint8))
     except Exception as e:
@@ -157,8 +173,8 @@ def normalize_batch(batch: torch.Tensor) -> torch.Tensor:
     Returns:
         归一化后的张量
     """
-    mean = batch.new_tensor([0.485, 0.456, 0.406]).view(-1, 1, 1)
-    std = batch.new_tensor([0.229, 0.224, 0.225]).view(-1, 1, 1)
+    mean = batch.new_tensor(DEFAULT_CONFIG['IMAGE_MEAN']).view(-1, 1, 1)
+    std = batch.new_tensor(DEFAULT_CONFIG['IMAGE_STD']).view(-1, 1, 1)
     return (batch - mean) / std
 
 def denormalize_batch(batch: torch.Tensor) -> torch.Tensor:
@@ -170,8 +186,8 @@ def denormalize_batch(batch: torch.Tensor) -> torch.Tensor:
     Returns:
         反归一化后的张量
     """
-    mean = batch.new_tensor([0.485, 0.456, 0.406]).view(-1, 1, 1)
-    std = batch.new_tensor([0.229, 0.224, 0.225]).view(-1, 1, 1)
+    mean = batch.new_tensor(DEFAULT_CONFIG['IMAGE_MEAN']).view(-1, 1, 1)
+    std = batch.new_tensor(DEFAULT_CONFIG['IMAGE_STD']).view(-1, 1, 1)
     return batch * std + mean
 
 def match_histograms(source: torch.Tensor, template: torch.Tensor) -> torch.Tensor:

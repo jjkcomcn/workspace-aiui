@@ -48,27 +48,45 @@ class GramMatrix(nn.Module):
             计算得到的Gram矩阵
         """
         batch_size, channel, height, width = input.size()
-        with torch.no_grad():
-            # 添加输入值范围检查
-            if torch.isnan(input).any() or torch.isinf(input).any():
-                raise ValueError("Input contains NaN or Inf values")
-                
-            features = input.view(batch_size, channel, -1)  # [batch, channel, height*width]
+        
+        # 添加输入值范围检查
+        if torch.isnan(input).any() or torch.isinf(input).any():
+            raise ValueError("Input contains NaN or Inf values")
             
-            # 更严格的数值稳定处理
-            eps = 1e-6  # 增加数值稳定因子
-            norm_factor = channel * height * width + eps
-            
-            # 计算Gram矩阵
-            gram = torch.bmm(features, features.transpose(1, 2))
-            
-            # 更安全的归一化
-            gram = gram.clamp(min=-1e6, max=1e6)  # 限制值范围
-            gram.div_(norm_factor)
-            
-            # 检查输出
-            if torch.isnan(gram).any() or torch.isinf(gram).any():
-                raise ValueError("Gram matrix contains NaN or Inf values")
+        features = input.view(batch_size, channel, -1)  # [batch, channel, height*width]
+        
+        # 使用配置参数增强数值稳定性
+        eps = DEFAULT_CONFIG['GRAM_EPSILON']
+        max_val = DEFAULT_CONFIG['GRAM_MAX_VALUE']
+        
+        # 输入值裁剪
+        features = features.clamp(
+            min=-max_val,
+            max=max_val
+        )
+        
+        # 计算Gram矩阵
+        gram = torch.bmm(features, features.transpose(1, 2))
+        
+        # 更安全的归一化
+        norm_factor = channel * height * width + eps
+        gram = gram.clamp(
+            min=-max_val,
+            max=max_val
+        )
+        gram = gram / norm_factor * DEFAULT_CONFIG['GRAM_NORM_FACTOR']
+        
+        # 确保没有极值
+        gram = torch.nan_to_num(
+            gram,
+            nan=0.0,
+            posinf=max_val,
+            neginf=-max_val
+        )
+        
+        # 检查输出
+        if torch.isnan(gram).any() or torch.isinf(gram).any():
+            raise ValueError("Gram matrix contains NaN or Inf values")
         return gram
 
 class StyleLoss(nn.Module):
@@ -96,21 +114,27 @@ class StyleLoss(nn.Module):
         Returns:
             输入特征张量的克隆
         """
-        with torch.no_grad():
-            G = self.gram(input)
-            
-            # 数值稳定处理
-            eps = 1e-6
-            safe_weight = max(self.weight, eps)
-            safe_numel = max(G.numel(), 1)
-            
-            # 计算损失
-            self.loss = F.mse_loss(
-                G, 
-                self.target, 
-                reduction='sum'
-            ) * (safe_weight / safe_numel)
-            
-            # 限制损失值范围
-            self.loss = torch.clamp(self.loss, min=0, max=1e6)
+        G = self.gram(input)
+        
+        # 数值稳定处理
+        eps = DEFAULT_CONFIG['LOSS_EPSILON']
+        safe_weight = max(self.weight, eps)
+        safe_numel = max(G.numel(), 1)
+        
+        # 计算损失
+        loss = F.mse_loss(
+            G, 
+            self.target, 
+            reduction='mean'
+        )
+        
+        # 损失限制
+        self.loss = loss.clamp(
+            min=0, 
+            max=DEFAULT_CONFIG['MAX_LOSS_VALUE']
+        ) * self.weight
+        
+        # 确保损失不为NaN
+        if torch.isnan(self.loss):
+            self.loss = torch.tensor(0.0, device=self.loss.device)
         return input.clone()

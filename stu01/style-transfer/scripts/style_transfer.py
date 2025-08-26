@@ -78,17 +78,18 @@ def run_style_transfer():
         content_img = load_image(args.content, size=args.size)
         style_img = load_image(args.style, size=args.size)
         
-        # 直方图匹配预处理
-        logger.info("应用直方图匹配...")
-        style_img = match_histograms(style_img, content_img)
-        
         # 初始化输入图像
         input_img = content_img.clone().requires_grad_(True)
         
-        # 图像锐化
-        if args.size > 512:
+        # 根据配置决定是否应用直方图匹配
+        if DEFAULT_CONFIG.get('HISTOGRAM_MATCH', False):
+            logger.info("应用直方图匹配...")
+            style_img = match_histograms(style_img, content_img)
+        
+        # 根据配置决定是否应用锐化
+        if DEFAULT_CONFIG.get('SHARPEN_AMOUNT', 0.0) > 0 and args.size > 512:
             logger.info("应用图像锐化...")
-            input_img = sharpen_image(input_img, amount=0.3)
+            input_img = sharpen_image(input_img, amount=DEFAULT_CONFIG['SHARPEN_AMOUNT'])
         
         # 记录开始时间
         start_time = time.time()
@@ -110,14 +111,17 @@ def run_style_transfer():
             content_weight=args.content_weight
         )
         
-        # 优化器配置
+        # 更保守的优化器配置
         optimizer = optim.LBFGS(
             [input_img],
-            lr=0.8,
-            max_iter=20,
-            history_size=100,
-            line_search_fn='strong_wolfe'
+            lr=0.3,  # 降低学习率
+            max_iter=10,  # 减少每次迭代步数
+            history_size=50,  # 减少历史记录
+            line_search_fn='strong_wolfe',
+            tolerance_grad=1e-6,  # 更严格的梯度容忍度
+            tolerance_change=1e-9  # 更严格的变化容忍度
         )
+        logger.info(f"Optimizer configured with lr={0.3}, max_iter={10}")
         
         # 训练循环
         logger.info(f"开始训练，共{args.steps}步...")
@@ -147,6 +151,13 @@ def run_style_transfer():
                     return torch.tensor(0.0, device=input_img.device)
                 
                 loss.backward()
+                
+                # 梯度裁剪
+                torch.nn.utils.clip_grad_norm_(
+                    [input_img], 
+                    max_norm=DEFAULT_CONFIG['MAX_GRAD_NORM'],
+                    norm_type=2
+                )
                 
                 # 记录最佳结果
                 if not torch.isnan(loss) and loss.item() < best_loss:

@@ -5,6 +5,7 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Optional
 
 class ContentLoss(nn.Module):
@@ -38,7 +39,7 @@ class GramMatrix(nn.Module):
     """Gram矩阵计算模块"""
     
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        """高效计算Gram矩阵
+        """高效计算Gram矩阵(优化版)
         
         Args:
             input: 输入特征张量 [batch, channel, height, width]
@@ -47,9 +48,28 @@ class GramMatrix(nn.Module):
             计算得到的Gram矩阵
         """
         batch_size, channel, height, width = input.size()
-        features = input.view(batch_size, channel, -1)  # [batch, channel, height*width]
-        gram = torch.bmm(features, features.transpose(1, 2))  # [batch, channel, channel]
-        return gram.div_(channel * height * width + 1e-8)
+        with torch.no_grad():
+            # 添加输入值范围检查
+            if torch.isnan(input).any() or torch.isinf(input).any():
+                raise ValueError("Input contains NaN or Inf values")
+                
+            features = input.view(batch_size, channel, -1)  # [batch, channel, height*width]
+            
+            # 更严格的数值稳定处理
+            eps = 1e-6  # 增加数值稳定因子
+            norm_factor = channel * height * width + eps
+            
+            # 计算Gram矩阵
+            gram = torch.bmm(features, features.transpose(1, 2))
+            
+            # 更安全的归一化
+            gram = gram.clamp(min=-1e6, max=1e6)  # 限制值范围
+            gram.div_(norm_factor)
+            
+            # 检查输出
+            if torch.isnan(gram).any() or torch.isinf(gram).any():
+                raise ValueError("Gram matrix contains NaN or Inf values")
+        return gram
 
 class StyleLoss(nn.Module):
     """风格损失函数，衡量生成图像与风格图像在Gram矩阵空间的差异"""
@@ -68,7 +88,7 @@ class StyleLoss(nn.Module):
         self.criterion = nn.MSELoss()
         
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        """计算风格损失
+        """计算风格损失(优化版)
         
         Args:
             input: 输入特征张量
@@ -76,6 +96,21 @@ class StyleLoss(nn.Module):
         Returns:
             输入特征张量的克隆
         """
-        G = self.gram(input)
-        self.loss = self.criterion(G * self.weight, self.target)
+        with torch.no_grad():
+            G = self.gram(input)
+            
+            # 数值稳定处理
+            eps = 1e-6
+            safe_weight = max(self.weight, eps)
+            safe_numel = max(G.numel(), 1)
+            
+            # 计算损失
+            self.loss = F.mse_loss(
+                G, 
+                self.target, 
+                reduction='sum'
+            ) * (safe_weight / safe_numel)
+            
+            # 限制损失值范围
+            self.loss = torch.clamp(self.loss, min=0, max=1e6)
         return input.clone()

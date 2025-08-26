@@ -14,7 +14,7 @@ IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 
 def load_image(image_path: str, target_size: int = None) -> torch.Tensor:
-    """加载并预处理图像
+    """加载并预处理图像(先进行预缩放降低CPU压力)
     
     Args:
         image_path: 图像文件路径
@@ -31,7 +31,15 @@ def load_image(image_path: str, target_size: int = None) -> torch.Tensor:
     # 转换颜色空间
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     
-    # 调整大小
+    # 预缩放降低处理压力
+    pre_scale = DEFAULT_CONFIG.get('PRE_SCALE_FACTOR', 0.5)
+    if pre_scale < 1.0:
+        h, w = img.shape[:2]
+        pre_h = int(h * pre_scale)
+        pre_w = int(w * pre_scale)
+        img = cv2.resize(img, (pre_w, pre_h), interpolation=cv2.INTER_LANCZOS4)
+    
+    # 最终调整到目标尺寸
     if target_size is not None:
         h, w = img.shape[:2]
         if h > w:

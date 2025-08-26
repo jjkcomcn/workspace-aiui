@@ -67,9 +67,10 @@ def get_style_model_and_loss(
         
     # 确保模型在正确设备上
     cnn = cnn.to(DEVICE)
-    # 冻结模型参数
-    for param in cnn.parameters():
-        param.requires_grad_(False)
+    # 冻结模型参数并启用no_grad
+    with torch.no_grad():
+        for param in cnn.parameters():
+            param.requires_grad_(False)
     content_losses: List[ContentLoss] = []
     style_losses: List[StyleLoss] = []
     model = nn.Sequential().to(DEVICE)
@@ -93,6 +94,9 @@ def get_style_model_and_loss(
             # 添加内容损失层
             if layer_name in content_layers:
                 target = model(content_img.detach())
+                # 检查特征值范围
+                if torch.isnan(target).any() or torch.isinf(target).any():
+                    raise ValueError(f"NaN/Inf detected in content features at layer {layer_name}")
                 content_loss = ContentLoss(target, content_weight)
                 model.add_module(f'content_loss_{conv_counter}', content_loss)
                 content_losses.append(content_loss)
@@ -100,6 +104,9 @@ def get_style_model_and_loss(
             # 添加风格损失层
             if layer_name in style_layers:
                 target = model(style_img.detach())
+                # 检查特征值范围
+                if torch.isnan(target).any() or torch.isinf(target).any():
+                    raise ValueError(f"NaN/Inf detected in style features at layer {layer_name}")
                 target = gram(target)
                 style_loss = StyleLoss(target, style_weight)
                 model.add_module(f'style_loss_{conv_counter}', style_loss)
@@ -113,5 +120,6 @@ def get_style_model_and_loss(
         elif isinstance(layer, nn.ReLU):
             model.add_module(f'relu_{conv_counter}', layer)
     
-    logger.info(f"Model built successfully with {len(style_losses)} style layers and {len(content_losses)} content layers")
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(f"Model built with {len(style_losses)} style layers and {len(content_losses)} content layers")
     return model, style_losses, content_losses

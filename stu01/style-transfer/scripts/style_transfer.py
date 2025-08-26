@@ -78,8 +78,17 @@ def run_style_transfer():
         content_img = load_image(args.content, size=args.size)
         style_img = load_image(args.style, size=args.size)
         
+        # 直方图匹配预处理
+        logger.info("应用直方图匹配...")
+        style_img = match_histograms(style_img, content_img)
+        
         # 初始化输入图像
         input_img = content_img.clone().requires_grad_(True)
+        
+        # 图像锐化
+        if args.size > 512:
+            logger.info("应用图像锐化...")
+            input_img = sharpen_image(input_img, amount=0.3)
         
         # 记录开始时间
         start_time = time.time()
@@ -101,33 +110,62 @@ def run_style_transfer():
             content_weight=args.content_weight
         )
         
-        # 优化器
-        optimizer = optim.LBFGS([input_img])
+        # 优化器配置
+        optimizer = optim.LBFGS(
+            [input_img],
+            lr=0.8,
+            max_iter=20,
+            history_size=100,
+            line_search_fn='strong_wolfe'
+        )
         
-        # 训练
+        # 训练循环
         logger.info(f"开始训练，共{args.steps}步...")
+        best_loss = float('inf')
+        best_img = None
+        
         for step in range(args.steps):
             def closure():
+                nonlocal best_loss, best_img
                 optimizer.zero_grad()
                 model(input_img)
                 
-                # 计算损失
-                style_score = sum(sl.loss for sl in style_losses)
-                content_score = sum(cl.loss for cl in content_losses)
+                # 计算加权损失
+                style_score = 0
+                content_score = 0
+                for sl in style_losses:
+                    style_score += sl.loss * args.style_weight
+                for cl in content_losses:
+                    content_score += cl.loss * args.content_weight
+                
                 loss = style_score + content_score
+                
+                # 检查NaN值
+                if torch.isnan(loss).any():
+                    logger.warning("NaN detected in loss, resetting optimization state")
+                    input_img.data = content_img.clone().requires_grad_(True)
+                    return torch.tensor(0.0, device=input_img.device)
+                
                 loss.backward()
                 
+                # 记录最佳结果
+                if not torch.isnan(loss) and loss.item() < best_loss:
+                    best_loss = loss.item()
+                    best_img = input_img.detach().clone()
+                
                 # 记录进度
-                if step % 50 == 0:
-                    logger.info(f"Step {step}: Style Loss: {style_score.item():.4f}, "
-                             f"Content Loss: {content_score.item():.4f}")
+                if step % 20 == 0 or step == args.steps - 1:
+                    logger.info(f"Step {step}: "
+                              f"Total Loss: {loss.item():.4f}, "
+                              f"Style: {style_score.item():.4f}, "
+                              f"Content: {content_score.item():.4f}")
                 return loss
                 
             optimizer.step(closure)
         
-        # 保存结果
-        logger.info(f"保存结果到 {args.output}")
-        save_image(args.output, input_img)
+        # 保存最佳结果
+        logger.info(f"保存最佳结果到 {args.output}")
+        save_image(args.output, best_img if best_img is not None else input_img, quality=100)
         
         # 计算总耗时
         end_time = time.time()

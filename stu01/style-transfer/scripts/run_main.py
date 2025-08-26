@@ -90,11 +90,11 @@ def run_style_transfer(content_img, style_img, input_img, model, style_losses, c
     """
     # 配置LBFGS优化器参数
     optimizer = optim.LBFGS([input_img.requires_grad_()], 
-                          lr=0.2,        # 学习率 - 控制参数更新步长
-                          max_iter=100,  # 每次优化迭代的最大内部迭代次数
-                          tolerance_grad=1e-10,  # 梯度变化容差 - 更小的值提高精度
-                          tolerance_change=1e-10, # 参数变化容差 - 更小的值提高精度
-                          history_size=100)  # 存储的历史更新步数 - 影响内存使用
+                          lr=0.05,       # 降低学习率
+                          max_iter=20,   # 减少内部迭代次数
+                          tolerance_grad=1e-6,   # 放宽梯度容差
+                          tolerance_change=1e-6, # 放宽参数变化容差
+                          history_size=50)      # 减少历史记录
     
     logger.info('Starting optimization...')
     
@@ -130,6 +130,9 @@ def run_style_transfer(content_img, style_img, input_img, model, style_losses, c
             # 反向传播计算梯度
             total_loss.backward()
             
+            # 梯度裁剪
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
             # 每50步打印一次损失信息
             if step % 50 == 0:
                 logger.info(
@@ -156,11 +159,12 @@ def main():
     
     执行流程:
         1. 解析命令行参数
-        2. 检查运行环境(GPU/CPU)
-        3. 加载并预处理输入图像
-        4. 初始化风格迁移模型
-        5. 执行风格迁移优化
-        6. 保存结果图像
+        2. 配置CPU优化参数
+        3. 检查运行环境(GPU/CPU)
+        4. 加载并预处理输入图像
+        5. 初始化风格迁移模型
+        6. 执行风格迁移优化
+        7. 保存结果图像
         
     异常处理:
         - 输入文件不存在时退出
@@ -170,6 +174,57 @@ def main():
     """
     # 解析命令行参数
     args = parse_args()
+    
+    # 配置CPU优化参数
+    import torch
+    import os
+    from configs.settings import DEFAULT_CONFIG
+    
+    # 设置CPU线程数
+    torch.set_num_threads(DEFAULT_CONFIG['CPU_THREADS'])
+    logger.info(f"Using {DEFAULT_CONFIG['CPU_THREADS']} CPU threads")
+    
+    # 配置CPU调度优化
+    if DEFAULT_CONFIG['CPU_AFFINITY']:
+        try:
+            import psutil
+            p = psutil.Process()
+            cores = list(range(DEFAULT_CONFIG['CPU_THREADS']))
+            p.cpu_affinity(cores)
+            
+            # 根据调度策略设置线程优先级
+            if DEFAULT_CONFIG['CPU_SCHED_POLICY'] == 'throughput':
+                # 吞吐量优先模式
+                for core in cores:
+                    psutil.Process().cpu_affinity([core])
+                    psutil.Process().nice(psutil.HIGH_PRIORITY_CLASS)
+            else:
+                # 延迟优先模式
+                for core in cores:
+                    psutil.Process().cpu_affinity([core])
+                    psutil.Process().nice(psutil.NORMAL_PRIORITY_CLASS)
+            
+            logger.info(f"Set CPU affinity to cores {cores} with {DEFAULT_CONFIG['CPU_SCHED_POLICY']} policy")
+            
+            # 设置线程自旋等待时间
+            if hasattr(psutil, 'thread_spin_time'):
+                psutil.thread_spin_time(DEFAULT_CONFIG['THREAD_SPIN_TIME'])
+        except ImportError:
+            logger.warning("psutil not installed, cannot optimize CPU scheduling")
+    
+    # 配置并行处理
+    if DEFAULT_CONFIG['USE_PARALLEL']:
+        torch.set_float32_matmul_precision('high')
+        logger.info("Enabled parallel processing")
+    
+    # 内存优化配置
+    if DEFAULT_CONFIG['MEMORY_OPTIMIZATION']:
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = False
+        logger.info("Enabled memory optimization")
+    
+    # 设置数据加载器参数
+    torch.set_num_interop_threads(DEFAULT_CONFIG['NUM_WORKERS'] or 1)
     
     # 检查运行环境(GPU是否可用)
     available, env_info = check_environment()  # 返回环境信息和GPU可用状态
@@ -192,59 +247,103 @@ def main():
                 logger.error(f"Input file not found: {path}")
                 return  # 文件不存在时直接退出
 
-        # 加载内容图像并转换为float32张量
-        logger.info(f'Loading content image from {args.content}')
-        content_img = load_image(args.content, args.size).to(torch.float32)  # 确保使用float32类型
+        # 优化图像数据加载
+        logger.info('Optimizing image loading...')
+        with torch.no_grad():
+            # 使用多线程加载图像
+            if DEFAULT_CONFIG['NUM_WORKERS'] > 0:
+                from concurrent.futures import ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=DEFAULT_CONFIG['NUM_WORKERS']) as executor:
+                    content_future = executor.submit(load_image, args.content, args.size)
+                    style_future = executor.submit(load_image, args.style, args.size)
+                    content_img = content_future.result().to(torch.float32)
+                    style_img = style_future.result().to(torch.float32)
+                    
+                    # 确保多线程加载后形状正确
+                    if content_img.dim() != 4:
+                        content_img = content_img.unsqueeze(0)
+                    if style_img.dim() != 4:
+                        style_img = style_img.unsqueeze(0)
+            else:
+                content_img = load_image(args.content, args.size).to(torch.float32)
+                style_img = load_image(args.style, args.size).to(torch.float32)
+            
+            # 优化内存布局
+            content_img = content_img.cpu().contiguous()
+            style_img = style_img.cpu().contiguous()
+            
+            # 确保张量形状正确 [1, C, H, W]
+            content_img = content_img.unsqueeze(0) if content_img.dim() == 3 else content_img
+            style_img = style_img.unsqueeze(0) if style_img.dim() == 3 else style_img
         
-        logger.info(f'Loading style image from {args.style}')
-        style_img = load_image(args.style, args.size).to(torch.float32)
-        
-        # 调整风格图像尺寸与内容图像完全匹配
-        # 如果尺寸不匹配，使用双线性插值调整风格图像尺寸
+        # 优化图像尺寸匹配处理
         if content_img.shape != style_img.shape:
-            logger.info(f'Resizing style image from {style_img.shape} to match content image {content_img.shape}')
-            # 使用双线性插值保持图像质量
-            style_img = torch.nn.functional.interpolate(
-                style_img, 
-                size=(content_img.shape[2], content_img.shape[3]),  # 匹配高度和宽度
-                mode='bilinear',  # 双线性插值
-                align_corners=False
-            )
+            logger.info(f'Optimizing style image resizing from {style_img.shape} to {content_img.shape}')
+            # 使用更高效的插值方法
+            with torch.no_grad():
+                style_img = torch.nn.functional.interpolate(
+                    style_img,
+                    size=(content_img.shape[2], content_img.shape[3]),
+                    mode='bilinear',
+                    align_corners=False,
+                    antialias=True  # 启用抗锯齿以获得更好质量
+                ).contiguous()  # 确保内存连续
 
-        # 确保输出目录存在，不存在则创建
+        # 并行创建输出目录和初始化输入图像
         output_dir = Path(args.output).parent
         if not output_dir.exists():
-            logger.info(f"Creating output directory: {output_dir}")
-            output_dir.mkdir(parents=True, exist_ok=True)  # 递归创建目录
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+        # 优化输入图像初始化(支持批处理)
+        with torch.no_grad():
+            input_img = torch.cat([content_img] * DEFAULT_CONFIG['BATCH_SIZE'], dim=0).contiguous()
+            # 确保内存对齐
+            if input_img.stride()[1] % 64 != 0:
+                input_img = input_img.contiguous()
         
-        # 初始化输入图像(使用内容图像作为起点)并确保内存连续布局
-        input_img = content_img.clone().contiguous()  # 克隆并确保内存连续
+        # 优化模型加载
+        logger.info('Optimizing VGG19 model loading...')
+        with torch.no_grad():
+            cnn = models.vgg19(weights=models.VGG19_Weights.DEFAULT).eval()
+            # 减少模型内存占用
+            for param in cnn.parameters():
+                param.requires_grad_(False)
         
-        # 加载预训练的VGG19模型(用于特征提取)
-        logger.info('Loading VGG19 model...')
-        cnn = models.vgg19(weights=models.VGG19_Weights.DEFAULT).eval()  # 使用预训练权重并设为评估模式
+        # 优化模型构建过程
+        logger.info('Optimizing style transfer model building...')
+        with torch.no_grad():
+            model, style_losses, content_losses = get_style_model_and_loss(
+                cnn,
+                style_img,
+                content_img,
+                style_weight=args.style_weight,
+                content_weight=args.content_weight
+            )
+
         
-        # 构建风格迁移模型(包含内容和风格损失计算)
-        logger.info('Building style transfer model...')
-        model, style_losses, content_losses = get_style_model_and_loss(
-            cnn,  # VGG19模型
-            style_img,  # 风格图像
-            content_img,  # 内容图像
-            style_weight=args.style_weight,  # 风格权重
-            content_weight=args.content_weight  # 内容权重
-        )
-        
-        # 执行风格迁移优化过程
-        logger.info(f'Running style transfer for {args.steps} steps...')
-        output = run_style_transfer(
-            content_img,  # 内容图像
-            style_img,  # 风格图像
-            input_img,  # 输入/生成图像
-            model,  # 风格迁移模型
-            style_losses,  # 风格损失计算模块
-            content_losses,  # 内容损失计算模块
-            args.steps  # 迭代步数
-        )
+        # 优化风格迁移过程
+        logger.info(f'Optimizing style transfer for {args.steps} steps...')
+        with torch.no_grad():
+            # 调整优化器参数以提高CPU性能
+            if not torch.cuda.is_available():
+                args.steps = min(args.steps, 200)  # CPU上减少迭代次数
+                
+            # 批处理优化
+            output = None
+            for i in range(DEFAULT_CONFIG['BATCH_SIZE']):
+                current_output = run_style_transfer(
+                    content_img,
+                    style_img,
+                    input_img[i:i+1],
+                    model,
+                    style_losses,
+                    content_losses,
+                    args.steps
+                )
+                if output is None:
+                    output = current_output
+                else:
+                    output = torch.cat([output, current_output], dim=0)
         
         # 保存生成的风格迁移图像
         logger.info(f'Saving output to {args.output}')

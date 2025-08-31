@@ -1,7 +1,8 @@
-import sys
-from pathlib import Path
-import os
-import logging
-# 添加项目根目录到Python路径
-sys.path.append(str(Path(__file__).parent.parent))
-print(f"Current working directory: {sys.path}")
+import torch
+print(f"PyTorch版本: {torch.__version__}")
+print(f"CUDA可用: {torch.cuda.is_available()}")
+if torch.cuda.is_available():
+    print(f"CUDA版本: {torch.version.cuda}")
+    print(f"当前设备: {torch.cuda.current_device()}")
+    print(f"设备名称: {torch.cuda.get_device_name(0)}")
+    print(f"设备数量: {torch.cuda.device_count()}")

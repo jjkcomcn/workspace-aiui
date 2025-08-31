@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
+from configs.settings import DEFAULT_CONFIG
 
 class ContentLoss(nn.Module):
     """内容损失函数，衡量生成图像与内容图像在特征空间的距离"""

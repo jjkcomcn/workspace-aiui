@@ -73,9 +73,9 @@ def get_style_model_and_loss(
     for param in cnn.parameters():
         param.requires_grad_(False)
     
-    # 确保输入图像保留梯度
-    content_img = content_img.requires_grad_(True)
-    style_img = style_img.requires_grad_(True)
+    # 确保输入图像在正确设备上并保留梯度
+    content_img = content_img.to(DEVICE).requires_grad_(True)
+    style_img = style_img.to(DEVICE).requires_grad_(True)
     content_losses: List[ContentLoss] = []
     style_losses: List[StyleLoss] = []
     model = nn.Sequential().to(DEVICE)

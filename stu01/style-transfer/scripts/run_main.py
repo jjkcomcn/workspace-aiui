@@ -56,8 +56,8 @@ def parse_args():
                        default='data/input/',
                        help='内容图片目录路径 (默认: data/input/)')
     parser.add_argument('--style', type=str, 
-                       default='data/styles/style.jpg',
-                       help='风格图片路径 (默认: data/styles/style.jpg)')
+                       default='data/styles/style.png',
+                       help='风格图片路径 (默认: data/styles/style.png)')
     parser.add_argument('--output', type=str,
                        default='data/output/',
                        help='输出图片保存路径 (默认: data/output/)')
@@ -86,9 +86,12 @@ def run_style_transfer(content_img, style_img, input_img, model, style_losses, c
     返回:
         Tensor: 风格迁移后的图像张量 [1, C, H, W]
     """
+    # 确保input_img是叶子张量
+    input_img = input_img.clone().detach().requires_grad_(True)
+    
     # 从配置初始化LBFGS优化器
     optimizer = optim.LBFGS(
-        [input_img.requires_grad_()],
+        [input_img],
         lr=DEFAULT_CONFIG['LEARNING_RATE'],
         max_iter=DEFAULT_CONFIG['LBFGS_MAX_ITER'],
         history_size=DEFAULT_CONFIG['LBFGS_HISTORY_SIZE'],
@@ -217,8 +220,8 @@ def main():
         output_dir = Path(args.output if args.output.endswith('/') else args.output + '/')
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # 加载完整VGG19模型并冻结参数
-        cnn = models.vgg19(weights=models.VGG19_Weights.IMAGENET1K_V1).to(DEVICE).eval()
+        # 加载ResNet50模型(更适合动漫风格)
+        cnn = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1).to(DEVICE).eval()
         for param in cnn.parameters():
             param.requires_grad_(False)
         

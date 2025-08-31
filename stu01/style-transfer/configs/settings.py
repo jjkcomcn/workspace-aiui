@@ -4,26 +4,33 @@
 """
 
 DEFAULT_CONFIG = {
+    # 数据路径配置
+    'DATA_ROOT': 'data/',  # 数据根目录
+    'DATA_INPUT_DIR': 'data/input/',  # 输入图片目录
+    'DATA_OUTPUT_DIR': 'data/output/',  # 输出图片目录
+    'DATA_STYLES_DIR': 'data/styles/',  # 风格图片目录
+    'MODEL_WEIGHTS_PATH': 'data/models/',  # 预训练模型权重路径
+    
     # 图片处理配置
-    'IMAGE_SIZE': 256,  # 提高默认分辨率
-    'IMAGE_MEAN': [0.0, 0.0, 0.0],  # 禁用归一化
-    'IMAGE_STD': [1.0, 1.0, 1.0],   # 禁用归一化
+    'IMAGE_SIZE': 1024,  # 提高输出分辨率
+    'IMAGE_MEAN': [0.485, 0.456, 0.406],  # 恢复标准均值
+    'IMAGE_STD': [0.229, 0.224, 0.225],   # 恢复标准标准差
     'COLOR_ENHANCE': True,   # 启用色彩增强
-    'COLOR_SATURATION': 1.2, # 增加色彩饱和度
-    'STYLE_LOSS_SCALE': 1e-8,  # 调整风格损失缩放因子
-    'PRE_SCALE_FACTOR': 1.0,  # 禁用预缩放，保持原尺寸
-    'INTERPOLATION': 'area',  # 使用面积插值保持比例
-    'KEEP_ASPECT_RATIO': True,  # 新增参数保持宽高比
+    'COLOR_SATURATION': 1.2, # 适度增强色彩饱和度
+    'STYLE_LOSS_SCALE': 1e-8,  # 增强风格损失影响
+    'PRE_SCALE_FACTOR': 0.7,  # 优化内存使用
+    'INTERPOLATION': 'lanczos',  # 使用高质量插值
+    'KEEP_ASPECT_RATIO': True,  # 保持宽高比
     
     # 损失权重
-    'STYLE_WEIGHT': 1e4,    # 最小推荐风格权重
-    'CONTENT_WEIGHT': 3.0,   # 较高内容权重
+    'STYLE_WEIGHT': 2e6,    # 极端风格权重(动漫风格必须)
+    'CONTENT_WEIGHT': 0.2,   # 极低内容权重
     'HISTOGRAM_MATCH': False,  # 禁用直方图匹配
-    'SHARPEN_AMOUNT': 0.0,   # 禁用锐化处理
+    'SHARPEN_AMOUNT': 0.2,   # 轻微锐化
     
     # 优化器参数
-    'LEARNING_RATE': 0.0015,  # 学习率
-    'OPTIMIZER_STEPS': 200,   # 优化步数
+    'LEARNING_RATE': 0.001,  # 更稳定的学习率
+    'OPTIMIZER_STEPS': 500,   # 增加优化步数
     'LR_DECAY_STEPS': 50,     # 学习率衰减步数
     'LBFGS_HISTORY_SIZE': 50, # LBFGS历史记录大小
     'LBFGS_MAX_ITER': 10,     # LBFGS每次迭代最大步数
@@ -36,8 +43,8 @@ DEFAULT_CONFIG = {
     'PROGRESS_DESC': 'Style Transfer Progress',  # 进度条描述
     
     # 图像后处理
-    'CLIP_MIN': 0.25,          # 微调像素值裁剪下限
-    'CLIP_MAX': 0.75,         # 微调像素值裁剪上限
+    'CLIP_MIN': 0.15,          # 标准亮度下限
+    'CLIP_MAX': 0.85,         # 标准亮度上限
     
     # 图像归一化参数
     'IMAGE_MEAN': [0.485, 0.456, 0.406],  # 图像均值
@@ -58,12 +65,12 @@ DEFAULT_CONFIG = {
     'MAX_LOSS_VALUE': 1e4,   # 损失值最大限制
     
     # 设备配置
-    'FORCE_CPU': False,      # 强制使用CPU
+    'FORCE_CPU': False,      # 启用CUDA加速
     'LOG_FORMAT': '%(asctime)s - %(levelname)s - %(message)s',  # 日志格式
     
     # 层配置
-    'CONTENT_LAYERS': ['conv_2', 'conv_3'],  # 使用较浅层获取更多细节
-    'STYLE_LAYERS': ['conv_1', 'conv_2', 'conv_3'],  # 减少风格层数
+    'CONTENT_LAYERS': ['conv_3', 'conv_4'],  # 使用较深层获取更多内容结构
+    'STYLE_LAYERS': ['conv_1', 'conv_2', 'conv_3'],  # 使用更浅层提取动漫风格
     'MAX_GRAD_NORM': 1.0,  # 添加梯度裁剪阈值
     
     # CPU优化参数
@@ -89,6 +96,20 @@ def validate_config(config: dict) -> bool:
         bool: 配置是否有效
     """
     try:
+        # 验证路径配置
+        if not isinstance(config['DATA_ROOT'], str):
+            raise ValueError("DATA_ROOT should be a string path")
+        if not isinstance(config['DATA_INPUT_DIR'], str):
+            raise ValueError("DATA_INPUT_DIR should be a string path")
+        if not isinstance(config['DATA_OUTPUT_DIR'], str):
+            raise ValueError("DATA_OUTPUT_DIR should be a string path")
+        if not isinstance(config['DATA_STYLES_DIR'], str):
+            raise ValueError("DATA_STYLES_DIR should be a string path")
+        if not isinstance(config['MODEL_WEIGHTS_PATH'], str):
+            raise ValueError("MODEL_WEIGHTS_PATH should be a string path")
+        if not isinstance(config['OUTPUT_DIR'], str):
+            raise ValueError("OUTPUT_DIR should be a string path")
+            
         # 验证图片尺寸
         if not (64 <= config['IMAGE_SIZE'] <= 1024):
             raise ValueError("IMAGE_SIZE should be between 64 and 1024")
